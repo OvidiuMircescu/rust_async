@@ -1,13 +1,14 @@
 use async_process::Command;
-#[allow(dead_code)]
-async fn thread_sleep(i: u32){
+use futures::future::{self, Shared};
+use futures::future::FutureExt;
+
+pub async fn thread_sleep(i: u32){
     std::thread::sleep(std::time::Duration::from_secs(i.into()));
     // async_std::task::sleep(std::time::Duration::from_secs(i.into())).await;
     // println!("{i}");
 }
 
-#[allow(dead_code)]
-async fn foo(i: u32) -> u32 {
+pub async fn foo(i: u32) -> u32 {
     // std::thread::sleep(std::time::Duration::from_secs(i.into()));
     // async_std::task::sleep(std::time::Duration::from_secs(i.into())).await;
     // println!("{i}");
@@ -15,21 +16,31 @@ async fn foo(i: u32) -> u32 {
     i
 }
 
-#[allow(dead_code)]
-async fn command_sleep(delay: u32)->Result<(), async_std::io::Error>{
+pub async fn command_sleep(delay: u32)->Result<u32, async_std::io::Error>{
     Command::new("sleep").arg(delay.to_string()).status().await?;
-    Result::Ok(())
+    Result::Ok(delay)
 }
 
-#[allow(dead_code)]
-async fn run_command(){
+pub async fn s_command_sleep(delay: u32)->u32{
+    Command::new("sleep").arg(delay.to_string()).status().await;
+    delay
+}
+
+// TODO: deal with errors. async_std::io::Error not clonable.
+// pub async fn run_command<Fut>(args:Fut) -> Result<u32, async_std::io::Error>
+pub async fn run_command<Fut>(args:Fut) -> u32
+where
+//   Fut: future::Future<Output = Result<u32, async_std::io::Error>>
+  Fut: future::Future<Output = u32>
+{
+    let v = args.await;
+    let ret = s_command_sleep(v).await;
+    ret
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::future;
-    use futures::future::FutureExt;
     use std::time::Instant;
 
     #[async_std::test]
@@ -77,5 +88,18 @@ mod tests {
         future::join_all(lst_futures).await; // no error check
         let run_time = start_time.elapsed().as_secs();
         assert!(run_time < 4);
+    }
+
+    #[async_std::test]
+    async fn mini_graph() {
+        let start_time = Instant::now();
+        let r1 = s_command_sleep(1).shared();
+        let r2 = run_command(r1.clone()).shared();
+        let r3 = run_command(r1.clone()).shared();
+        let r4 = run_command(r2.clone()).shared();
+        future::join(future::join(future::join(r1, r2), r3), r4).await;
+        let run_time = start_time.elapsed().as_secs();
+        // println!("run_time:{run_time}s");
+        assert!(run_time == 3);
     }
 }
