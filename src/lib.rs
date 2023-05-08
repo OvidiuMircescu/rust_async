@@ -21,21 +21,21 @@ pub async fn command_sleep(delay: u32)->Result<u32, async_std::io::Error>{
     Result::Ok(delay)
 }
 
-pub async fn s_command_sleep(delay: u32)->u32{
-    Command::new("sleep").arg(delay.to_string()).status().await;
-    delay
+pub async fn s_command_sleep(delay: u32)->Result<u32, String>{
+    let ret = Command::new("sleep").arg(delay.to_string()).status().await;
+    match ret{
+        Err(e) => Err(e.to_string()),
+        Ok(_) => Ok(delay)
+    }
 }
 
-// TODO: deal with errors. async_std::io::Error not clonable.
+pub async fn run_command<Fut>(args:Fut) -> Result<u32, String>
 // pub async fn run_command<Fut>(args:Fut) -> Result<u32, async_std::io::Error>
-pub async fn run_command<Fut>(args:Fut) -> u32
 where
-//   Fut: future::Future<Output = Result<u32, async_std::io::Error>>
-  Fut: future::Future<Output = u32>
+  Fut: future::Future<Output = Result<u32, String>>
 {
-    let v = args.await;
-    let ret = s_command_sleep(v).await;
-    ret
+    let sync_value = args.await?;
+    s_command_sleep(sync_value).await
 }
 
 #[cfg(test)]
