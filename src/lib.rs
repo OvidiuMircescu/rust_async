@@ -22,7 +22,7 @@ pub async fn command_sleep(delay: u32)->Result<u32, async_std::io::Error>{
     Result::Ok(delay)
 }
 
-pub async fn s_command_sleep(delay: u32)->Result<u32, String>{
+pub async fn s_command_sleep(delay: u32)->EvaluationResult{
     let ret = Command::new("sleep").arg(delay.to_string()).status().await;
     match ret{
         Err(e) => Err(e.to_string()),
@@ -39,13 +39,54 @@ where
     s_command_sleep(sync_value).await
 }
 
+// exchange type of arguments
+type ArgType = u32;
+
+// The result of a remote evaluation may be a value (ArgType) or an error (String)
+type EvaluationResult = Result<ArgType, String>;
+
+//
+type FutureEvaluationRef = Pin<Box<dyn futures::Future<Output = EvaluationResult> + Send >>;
+
+type SyncComposedTaskType = Box<dyn Fn(ArgType)-> EvaluationResult  + Send >;
+
 // run_command is template & generates different types of futures which cannot be mixed in a collection.
 // ref_run_command generates futures that can be mixed in a collection.
-pub async fn ref_run_command(args:Pin<Box<dyn futures::Future<Output = Result<u32, String>> + Send >>) -> Result<u32, String>
+pub async fn ref_run_command(args:FutureEvaluationRef) -> EvaluationResult
 {
     let sync_value = args.boxed().await?;
     s_command_sleep(sync_value).await
 }
+
+// pub async fn async_call(func:SyncComposedTaskType, args:FutureEvaluationRef) -> EvaluationResult
+// {
+//     let sync_args = args.boxed().await?;
+//     func(Ok(sync_args))
+// }
+
+pub enum AsyncCommand {
+    Local(SyncComposedTaskType),
+    Remote(String) //TODO type of remote command
+}
+
+pub async fn async_call(command:AsyncCommand, args:FutureEvaluationRef) -> EvaluationResult
+{
+    let sync_args = args.boxed().await?;
+    match command{
+        AsyncCommand::Local(func) => {
+            async move {func(sync_args)}.await
+        },
+        AsyncCommand::Remote(command_name) => {
+            let ret = Command::new(command_name).arg(sync_args.to_string()).status().await;
+            match ret{
+                Err(e) => Err(e.to_string()),
+                Ok(_) => Ok(sync_args)
+            }
+        }
+    }
+}
+
+
 
 #[cfg(test)]
 mod tests {
@@ -134,4 +175,56 @@ mod tests {
         // println!("run_time:{run_time}s");
         assert!(run_time == 3);
     }
+
+    use async_std::task;
+    fn composed_task(args:ArgType)->EvaluationResult{
+        let r1 = async_call(
+            AsyncCommand::Remote("sleep".to_string()),
+            Box::pin(async move{Ok(args)})).shared();
+        let r2 = async_call(
+            AsyncCommand::Remote("sleep".to_string()),
+            Box::pin(r1.clone())).shared();
+        let r3 = async_call(
+                AsyncCommand::Remote("sleep".to_string()),
+                Box::pin(r1.clone())).shared();
+        let lst: Vec<_> = vec![r1, r2, r3];
+        task::block_on(future::join_all(lst));
+        Ok(42)
+    }
+
+    #[test]
+    fn synctest(){
+        let start_time = Instant::now();
+        let r1 = async_call(
+            AsyncCommand::Remote("sleep".to_string()),
+            Box::pin(async{Ok(1)})).shared();
+        let r2 = async_call(
+            AsyncCommand::Remote("sleep".to_string()),
+            Box::pin(r1.clone())).shared();
+        let r3 = async_call(
+                AsyncCommand::Remote("sleep".to_string()),
+                Box::pin(r1.clone())).shared();
+        let r4 = async_call(
+            AsyncCommand::Remote("sleep".to_string()),
+            Box::pin(r2.clone())).shared();
+        let r5 = async_call(
+            AsyncCommand::Local(Box::new(composed_task)),
+             Box::pin(r4.clone())).shared();
+        let lst: Vec<_> = vec![r1, r2, r3, r4, r5];
+        let results = future::join_all(lst);
+        let res = task::block_on(results);
+        let run_time = start_time.elapsed().as_secs();
+        assert!(run_time == 5);
+        assert!(res[1] == Ok(1));
+        assert!(res[4] == Ok(42));
+
+        // for r in res{
+        //     match r{
+        //         Ok(v) => println!("value:{v}"),
+        //         Err(e) => println!("error:{e}")
+        //     };
+        // }
+        // println!("elapsed:{run_time}");
+    }
+
 }
